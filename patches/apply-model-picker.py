@@ -63,6 +63,15 @@ def patch_chat_route() -> None:
         warn(f"{CHAT_ROUTE} fehlt – Chat-Override übersprungen.")
         return
     text = CHAT_ROUTE.read_text(encoding="utf-8")
+    # Self-heal: alte V2-Regex (ohne ~, OpenRouter listet ~-Modelle) still
+    # aktualisieren – laeuft auch bei bereits gepatchtem Stand.
+    if "/^[A-Za-z0-9_.\\/:-]+$/.test(m)" in text:
+        text = text.replace(
+            "/^[A-Za-z0-9_.\\/:-]+$/.test(m)",
+            "/^[A-Za-z0-9_.~\\/:-]+$/.test(m)",
+        )
+        CHAT_ROUTE.write_text(text, encoding="utf-8")
+        ok("Chat-Route: Modell-Regex um ~-IDs erweitert.")
     if CHAT_MARK_V2 in text:
         ok("Chat-Route bereits gepatcht (Marker vorhanden).")
         return
@@ -115,7 +124,7 @@ def patch_chat_route() -> None:
         "    try {\n"
         '      const m = (JSON.parse(raw) as { model?: unknown }).model;\n'
         "      if (typeof m === \"string\" && m.length > 0 && m.length <= 128\n"
-        "        && /^[A-Za-z0-9_.\\/:-]+$/.test(m)) activeDirectModel = m;\n"
+        "        && /^[A-Za-z0-9_.~\\/:-]+$/.test(m)) activeDirectModel = m;\n"
         "    } catch { /* ignore */ }\n"
         '    if (!activeDirectModel && direct) activeDirectModel = direct.model ?? ""; \n'
         f"    {CHAT_MARK_V2}-END",
