@@ -32,6 +32,7 @@ PAGE = APP_ROOT / "src" / "app" / "page.tsx"
 MODELS_ROUTE = APP_ROOT / "src" / "app" / "api" / "models" / "route.ts"
 
 CHAT_MARK = "// OIU-MODEL-OVERRIDE"
+CHAT_MARK_V2 = "// OIU-MODEL-OVERRIDE-V2"
 PAGE_MARK = "// OIU-MODEL-PICKER"
 
 
@@ -62,29 +63,62 @@ def patch_chat_route() -> None:
         warn(f"{CHAT_ROUTE} fehlt – Chat-Override übersprungen.")
         return
     text = CHAT_ROUTE.read_text(encoding="utf-8")
-    if CHAT_MARK in text:
+    if CHAT_MARK_V2 in text:
         ok("Chat-Route bereits gepatcht (Marker vorhanden).")
         return
 
-    anchor = "as { messages?: unknown }).messages)"
-    if anchor not in text:
+    # Legacy-V1-Patch (const im try-Block, TS2304) normalisieren: erst die
+    # Nutzung zuruecksetzen, dann den alten START..END-Block entfernen.
+    # (Der Update-Lauf kopiert zwar pristine Dateien, aber sicher ist sicher.)
+    text = text.replace(
+        f"model: activeDirectModel || backend.model, {CHAT_MARK}\n",
+        "model: backend.model,\n",
+    )
+    lines = text.splitlines(keepends=True)
+    kept: list[str] = []
+    skipping = False
+    for ln in lines:
+        if f"{CHAT_MARK}-START" in ln and "V2" not in ln:
+            skipping = True
+            continue
+        if f"{CHAT_MARK}-END" in ln and "V2" not in ln:
+            skipping = False
+            continue
+        if skipping:
+            continue
+        kept.append(ln)
+    text = "".join(kept)
+
+    # V2: Deklaration auf Funktions-Scope (vor dem try), im try nur
+    # Zuweisungen – const im try-Block ist ausserhalb unsichtbar (TS2304).
+    decl_anchor = "let input: ResponseInputItem[] | null;"
+    if decl_anchor not in text:
         warn("Chat-Routen-Anker nicht gefunden (Upstream geändert?) – Override übersprungen.")
         return
     text = text.replace(
-        "input = toInput((JSON.parse(raw) as { messages?: unknown }).messages);",
-        "input = toInput((JSON.parse(raw) as { messages?: unknown }).messages);\n"
-        f"  {CHAT_MARK}-START\n"
-        "  // Proxmox-Patch: optionales Modell aus dem Body (Dropdown).\n"
-        "  // Nur im Direct-Betrieb (OpenRouter/Ollama); Cloud/Gateway bleibt fix.\n"
-        "  let requestedModel: string | null = null;\n"
-        "  try {\n"
-        '    const m = (JSON.parse(raw) as { model?: unknown }).model;\n'
-        "    if (typeof m === \"string\" && m.length > 0 && m.length <= 128\n"
-        "      && /^[A-Za-z0-9_.\\/:-]+$/.test(m)) requestedModel = m;\n"
-        "  } catch { requestedModel = null; }\n"
-        "  const activeDirectModel =\n"
-        "    requestedModel ?? (direct ? direct.model ?? \"\" : \"\");\n"
-        f"  {CHAT_MARK}-END",
+        decl_anchor,
+        decl_anchor + "\n"
+        f"  let activeDirectModel = \"\"; {CHAT_MARK_V2} "
+        "(wahlbares Direct-Modell, Default leer = backend.model)",
+        1,
+    )
+    parse_anchor = "input = toInput((JSON.parse(raw) as { messages?: unknown }).messages);"
+    if parse_anchor not in text:
+        warn("Chat-Routen-Parse-Anker fehlt – Override übersprungen.")
+        return
+    text = text.replace(
+        parse_anchor,
+        parse_anchor + "\n"
+        f"    {CHAT_MARK_V2}-START\n"
+        "    // Proxmox-Patch: optionales Modell aus dem Body (Dropdown).\n"
+        "    // Nur im Direct-Betrieb (OpenRouter/Ollama); Cloud/Gateway bleibt fix.\n"
+        "    try {\n"
+        '      const m = (JSON.parse(raw) as { model?: unknown }).model;\n'
+        "      if (typeof m === \"string\" && m.length > 0 && m.length <= 128\n"
+        "        && /^[A-Za-z0-9_.\\/:-]+$/.test(m)) activeDirectModel = m;\n"
+        "    } catch { /* ignore */ }\n"
+        '    if (!activeDirectModel && direct) activeDirectModel = direct.model ?? ""; \n'
+        f"    {CHAT_MARK_V2}-END",
         1,
     )
     # Nur der Direct-Call nutzt das wählbare Modell (ein Vorkommen im
@@ -96,7 +130,7 @@ def patch_chat_route() -> None:
             "                model: backend.model,\n"
             f"                {direct_anchor}",
             "              {\n"
-            f"                model: activeDirectModel || backend.model, {CHAT_MARK}\n"
+            f"                model: activeDirectModel || backend.model, {CHAT_MARK_V2}\n"
             f"                {direct_anchor}",
             1,
         )
