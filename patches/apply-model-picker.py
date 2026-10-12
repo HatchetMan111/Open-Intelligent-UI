@@ -34,6 +34,7 @@ MODELS_ROUTE = APP_ROOT / "src" / "app" / "api" / "models" / "route.ts"
 CHAT_MARK = "// OIU-MODEL-OVERRIDE"
 CHAT_MARK_V2 = "// OIU-MODEL-OVERRIDE-V2"
 PAGE_MARK = "// OIU-MODEL-PICKER"
+UUID_MARK = "// OIU-UUID-POLYFILL"
 
 
 def warn(msg: str) -> None:
@@ -239,8 +240,54 @@ def main() -> int:
     install_models_route()
     patch_chat_route()
     patch_page()
+    patch_uuid_polyfill()
     print("[model-picker] fertig.", flush=True)
     return 0
+
+
+def patch_uuid_polyfill() -> None:
+    """crypto.randomUUID-Polyfill fuer unsichere Kontexte.
+
+    Upstream (@openuidev/react-ui, processMessage) ruft beim Senden
+    crypto.randomUUID() auf. Das existiert nur in Secure Contexts
+    (https://, localhost). Per http://<LAN-IP>:3000 fehlt es ->
+    TypeError, keine Eingabe moeglich. Der Polyfill (via getRandomValues,
+    ueberall verfuegbar) schliesst die Luecke. Markerbasiert, idempotent.
+    """
+    if not PAGE.exists():
+        warn(f"{PAGE} fehlt – UUID-Polyfill übersprungen.")
+        return
+    text = PAGE.read_text(encoding="utf-8")
+    if UUID_MARK in text:
+        ok("UUID-Polyfill bereits vorhanden (Marker).")
+        return
+    anchor = '"use client";'
+    if anchor not in text:
+        warn("page.tsx-use-client-Anker fehlt – UUID-Polyfill übersprungen.")
+        return
+    polyfill = (
+        f'{anchor}\n'
+        f'{UUID_MARK}-START\n'
+        '// Proxmox-Patch: crypto.randomUUID gibt es nur in Secure Contexts.\n'
+        '// Per http://<LAN-IP>:PORT fehlt es und Upstream crasht beim Senden.\n'
+        'if (typeof window !== "undefined") {\n'
+        '  const c = window.crypto as unknown as { randomUUID?: () => string } | undefined;\n'
+        '  if (c && typeof c.randomUUID !== "function") {\n'
+        '    c.randomUUID = () => {\n'
+        '      const b = new Uint8Array(16);\n'
+        '      window.crypto.getRandomValues(b);\n'
+        '      b[6] = (b[6] & 0x0f) | 0x40;\n'
+        '      b[8] = (b[8] & 0x3f) | 0x80;\n'
+        '      const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");\n'
+        '      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;\n'
+        '    };\n'
+        '  }\n'
+        '}\n'
+        f'{UUID_MARK}-END\n'
+    )
+    text = text.replace(anchor, polyfill, 1)
+    PAGE.write_text(text, encoding="utf-8")
+    ok("page.tsx: crypto.randomUUID-Polyfill eingefügt.")
 
 
 if __name__ == "__main__":
