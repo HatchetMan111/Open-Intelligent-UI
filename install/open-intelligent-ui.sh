@@ -165,9 +165,26 @@ fi
 msg_info "Storage: $STORAGE_ARG | Template-Store: $TEMPLATE_STORE | Bridge: $BRIDGE"
 
 if [[ -z "$OPENROUTER_KEY" ]]; then
-  msg_warn "Kein OpenRouter-Key gesetzt (OPENROUTER_API_KEY/--openrouter-key)."
+  # Interaktive Abfrage (nur am Terminal; Einzeiler via bash -c hat stdin am TTY).
+  # Silent (-s), damit der Key weder auf dem Schirm noch im Log landet.
+  if [[ -t 0 ]]; then
+    echo ""
+    msg_info "OpenRouter API-Key eingeben (Enter = überspringen, Key später in .env nachtragen):"
+    read -r -s -p "  OPENROUTER_API_KEY: " OPENROUTER_KEY_INPUT || true
+    echo ""
+    OPENROUTER_KEY="$(printf '%s' "${OPENROUTER_KEY_INPUT:-}" | tr -d '[:space:]')"
+    unset OPENROUTER_KEY_INPUT
+    if [[ -n "$OPENROUTER_KEY" && "$OPENROUTER_KEY" != sk-or-* ]]; then
+      msg_warn "Key beginnt nicht mit 'sk-or-' – trotzdem übernommen (ggf. anderes Gateway)."
+    fi
+  fi
+fi
+if [[ -z "$OPENROUTER_KEY" ]]; then
+  msg_warn "Kein OpenRouter-Key gesetzt (OPENROUTER_API_KEY/--openrouter-key oder Prompt)."
   msg_warn "Der Container wird trotzdem gebaut; Key danach nachtragen:"
   msg_warn "  pct exec $CT_ID -- nano $APP_DIR/.env && pct exec $CT_ID -- systemctl restart $APP"
+else
+  msg_ok "OpenRouter-Key gesetzt (wird nicht angezeigt/ausgegeben)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -295,6 +312,9 @@ fi
 # .env schreiben (idempotent + update-sicher: vorhandener LLM_API_KEY bleibt,
 # außer es wurde ein neuer Key per --openrouter-key/Env übergeben)
 msg_info "Schreibe .env (OpenRouter-Betrieb) ..."
+# Key nie ins --debug-Log (set -x wuerde die expandierte Befehlszeile zeigen).
+XTRACE_STATE="$(shopt -po xtrace 2>/dev/null || echo "set +o xtrace")"
+set +x
 pct exec "$CT_ID" -- env "OIU_KEY=$OPENROUTER_KEY" "OIU_MODEL=$MODEL" "OIU_REAS=$REASONING" bash -c '
   set -euo pipefail
   python3 - <<PYEOF
@@ -327,6 +347,7 @@ p.write_text(
 print("env keys:", ",".join(sorted(vals)))
 PYEOF
 '
+eval "$XTRACE_STATE" 2>/dev/null || true
 pct exec "$CT_ID" -- chown oiu:oiu /opt/open-intelligent-ui/.env
 pct exec "$CT_ID" -- chmod 600 /opt/open-intelligent-ui/.env
 msg_ok ".env geschrieben (Modell: $MODEL)."

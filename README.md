@@ -21,6 +21,8 @@ Mit OpenRouter-Key + Wunschmodell direkt:
 OPENROUTER_API_KEY=sk-or-... LLM_MODEL=openai/gpt-6.1-sol bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Open-Intelligent-UI/main/install/open-intelligent-ui.sh)"
 ```
 
+Ohne Key fragt das Script **interaktiv** danach (stille Eingabe, `Enter` = überspringen und später in `.env` nachtragen). Per Flag geht es auch nicht-interaktiv (`--openrouter-key ...`), z. B. für Automatisierung.
+
 Anpassungen per Umgebungsvariable oder Flag (ID immer **nächste freie**, außer gesetzt):
 
 ```bash
