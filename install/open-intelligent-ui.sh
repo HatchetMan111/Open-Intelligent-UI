@@ -292,26 +292,41 @@ else
   msg_info "Modell-Picker per --no-picker deaktiviert (Upstream pur)."
 fi
 
-# .env schreiben (idempotent: vorhandene Keys bleiben, OIU-Keys werden gesetzt)
+# .env schreiben (idempotent + update-sicher: vorhandener LLM_API_KEY bleibt,
+# außer es wurde ein neuer Key per --openrouter-key/Env übergeben)
 msg_info "Schreibe .env (OpenRouter-Betrieb) ..."
-TMP_ENV="$(mktemp)"
-{
-  echo "# Open Intelligent UI – Proxmox LXC (vom Installer verwaltet, weitere Keys in .env ergänzbar)"
-  echo "LLM_BASE_URL=https://openrouter.ai/api/v1"
-  echo "LLM_API_KEY=${OPENROUTER_KEY}"
-  echo "LLM_MODEL=${MODEL}"
-  echo "LLM_REASONING_EFFORT=${REASONING}"
-  echo "PORT=3000"
-  echo ""
-  echo "# Alternativ: Thesys-Cloud statt OpenRouter (LLM_*-Zeilen dann entfernen):"
-  echo "# THESYS_API_KEY="
-  echo "# THESYS_MODEL=openai/gpt-6.1-sol"
-  echo "# Alternativ: lokales Ollama statt Cloud (braucht viel RAM, siehe README):"
-  echo "# MODEL_PROVIDER=ollama"
-  echo "# OLLAMA_MODEL=qwen3.8:27b"
-} > "$TMP_ENV"
-pct push "$CT_ID" "$TMP_ENV" /opt/open-intelligent-ui/.env
-rm -f "$TMP_ENV"
+pct exec "$CT_ID" -- env "OIU_KEY=$OPENROUTER_KEY" "OIU_MODEL=$MODEL" "OIU_REAS=$REASONING" bash -c '
+  set -euo pipefail
+  python3 - <<PYEOF
+import os
+from pathlib import Path
+p = Path("/opt/open-intelligent-ui/.env")
+vals: dict[str, str] = {}
+if p.exists():
+    for line in p.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            k, v = s.split("=", 1)
+            vals[k.strip()] = v.strip()
+vals["LLM_BASE_URL"] = "https://openrouter.ai/api/v1"
+if os.environ.get("OIU_KEY"):
+    vals["LLM_API_KEY"] = os.environ["OIU_KEY"]
+vals.setdefault("LLM_API_KEY", "")
+vals["LLM_MODEL"] = os.environ.get("OIU_MODEL", "openai/gpt-6.1-sol")
+vals["LLM_REASONING_EFFORT"] = os.environ.get("OIU_REAS", "low")
+vals.setdefault("PORT", "3000")
+p.write_text(
+    "# Open Intelligent UI - Proxmox LXC (vom Installer verwaltet, weitere Keys ergaenzbar)\n"
+    + "\n".join(f"{k}={v}" for k, v in vals.items()) + "\n"
+    + "\n# Alternativ: Thesys-Cloud statt OpenRouter (LLM_*-Zeilen dann entfernen):\n"
+    + "# THESYS_API_KEY=\n# THESYS_MODEL=openai/gpt-6.1-sol\n"
+    + "# Alternativ: lokales Ollama statt Cloud (braucht viel RAM, siehe README):\n"
+    + "# MODEL_PROVIDER=ollama\n# OLLAMA_MODEL=qwen3.8:27b\n",
+    encoding="utf-8",
+)
+print("env keys:", ",".join(sorted(vals)))
+PYEOF
+'
 pct exec "$CT_ID" -- chown oiu:oiu /opt/open-intelligent-ui/.env
 pct exec "$CT_ID" -- chmod 600 /opt/open-intelligent-ui/.env
 msg_ok ".env geschrieben (Modell: $MODEL)."
@@ -320,7 +335,23 @@ msg_info "Baue App im Container (npm ci + build, dauert Minuten) ..."
 pct exec "$CT_ID" -- bash -c '
   set -euo pipefail
   cd /opt/open-intelligent-ui
-  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+  # Grosszuegige Timeouts: registry.npmjs.org ist von manchen Netzen aus zaeh.
+  npm config set fetch-retries 5
+  npm config set fetch-retry-mintimeout 20000
+  npm config set fetch-timeout 120000
+  ATTEMPT=0
+  until [ "$ATTEMPT" -ge 3 ]; do
+    ATTEMPT=$((ATTEMPT + 1))
+    echo "--- npm-Install Versuch $ATTEMPT/3 ---"
+    rm -rf node_modules
+    if [ -f package-lock.json ]; then
+      npm ci --no-audit --no-fund && break || echo "Versuch $ATTEMPT scheiterte – warte 15s ..."
+    else
+      npm install --no-audit --no-fund && break || echo "Versuch $ATTEMPT scheiterte – warte 15s ..."
+    fi
+    [ "$ATTEMPT" -ge 3 ] && { echo "npm-Install nach 3 Versuchen gescheitert."; exit 1; }
+    sleep 15
+  done
   npm run build
   chown -R oiu:oiu /opt/open-intelligent-ui
 '
